@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 
 """supervisord -- run a set of applications as daemons.
 
@@ -30,6 +30,8 @@ Options:
                              e.g. 'cumulative,callers')
 """
 
+import sys
+sys.path.append('..')
 import os
 import time
 import errno
