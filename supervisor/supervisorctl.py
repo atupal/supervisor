@@ -1,4 +1,4 @@
-#!/usr/bin/env python -u
+#!/usr/bin/env python2
 
 """supervisorctl -- control applications run by supervisord from the cmd line.
 
@@ -24,6 +24,7 @@ actions.
 
 import cmd
 import sys
+sys.path.append('..')
 import getpass
 import xmlrpclib
 import socket
@@ -37,6 +38,7 @@ from supervisor.options import ClientOptions
 from supervisor.options import split_namespec
 from supervisor import xmlrpc
 from supervisor import states
+
 
 class fgthread(threading.Thread):
     """ A subclass of threading.Thread, with a kill() method.
