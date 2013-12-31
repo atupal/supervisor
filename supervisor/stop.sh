@@ -3,4 +3,4 @@
 ROOT=$(cd `dirname $0`; pwd)
 cd $ROOT
 
-kill -9 `cat /tmp/supervisord.pid`
+kill -3 `cat /tmp/supervisord.pid`

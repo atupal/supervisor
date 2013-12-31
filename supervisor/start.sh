@@ -5,5 +5,5 @@ ROOT=$(cd `dirname $0`; pwd)
 
 cd $ROOT
 
-./stop.sh
-./supervisord.py -c ../../supervisord.conf
+sudo ./stop.sh
+sudo ./supervisord.py -c ../../supervisord.conf $@
