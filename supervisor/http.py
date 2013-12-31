@@ -22,6 +22,7 @@ from supervisor.medusa import http_server
 from supervisor.medusa import producers
 from supervisor.medusa import filesys
 from supervisor.medusa import default_handler
+from supervisor.molly import rest_handler
 
 from supervisor.medusa.auth_handler import auth_handler
 
@@ -821,6 +822,7 @@ def make_http_servers(options, supervisord):
         templatedir = os.path.join(here, 'ui')
         filesystem = filesys.os_filesystem(templatedir)
         defaulthandler = default_handler.default_handler(filesystem)
+        resthandler = rest_handler.rest_handler(supervisord)
 
         username = config['username']
         password = config['password']
@@ -834,6 +836,7 @@ def make_http_servers(options, supervisord):
             maintailhandler = supervisor_auth_handler(users, maintailhandler)
             uihandler = supervisor_auth_handler(users, uihandler)
             defaulthandler = supervisor_auth_handler(users, defaulthandler)
+            resthandler = supervisor_auth_handler(users, resthandler)
         else:
             options.logger.critical(
                 'Server %r running without any HTTP '
@@ -845,6 +848,7 @@ def make_http_servers(options, supervisord):
         hs.install_handler(maintailhandler)
         hs.install_handler(tailhandler)
         hs.install_handler(xmlrpchandler) # last for speed (first checked)
+        hs.install_handler(resthandler)
         servers.append((config, hs))
 
     return servers
