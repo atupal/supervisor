@@ -1,0 +1,285 @@
+Index: .arcconfig
+===================================================================
+--- /dev/null
++++ .arcconfig
+@@ -0,0 +1,4 @@
++{
++  "project_id" : "Minos",
++  "conduit_uri" : "http://phabricator.n.miliao.com/"
++}
+Index: config/supervisord.conf
+===================================================================
+--- config/supervisord.conf
++++ config/supervisord.conf
+@@ -24,6 +24,7 @@
+ logfile_backups=10           ; (num of main logfile rotation backups;default 10)
+ loglevel=info                ; (log level;default info; others: debug,warn,trace)
+ pidfile=/home/work/log/supervisord.pid ; (supervisord pidfile;default supervisord.pid)
++subprocpidfile=/home/work/log/subprocess.pids ; (managed subprocess pids file;default empty)
+ nodaemon=false               ; (start in foreground if true;default false)
+ minfds=1024                  ; (min. avail startup file descriptors;default 1024)
+ minprocs=200                 ; (min. avail process descriptors;default 200)
+@@ -42,10 +43,6 @@
+ [rpcinterface:supervisor]
+ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
+ 
+-[rpcinterface:metrics]
+-format=text
+-supervisor.rpcinterface_factory = metrics.rpcinterface:system_metrics_rpcinterface
+-
+ [rpcinterface:deployment]
+ package_server=http://10.2.201.24:8000
+ download_package_uri=packages
+Index: supervisor/supervisor/options.py
+===================================================================
+--- supervisor/supervisor/options.py
++++ supervisor/supervisor/options.py
+@@ -49,6 +49,8 @@
+ from supervisor.datatypes import profile_options
+ from supervisor.datatypes import set_here
+ 
++from supervisor.states import ProcessStates
++
+ from supervisor import loggers
+ from supervisor import states
+ from supervisor import xmlrpc
+@@ -368,6 +370,7 @@
+     logfile = None
+     loglevel = None
+     pidfile = None
++    subprocpidfile = None
+     passwdfile = None
+     nodaemon = None
+     environment = None
+@@ -399,6 +402,8 @@
+                  logging_level, default="info")
+         self.add("pidfile", "supervisord.pidfile", "j:", "pidfile=",
+                  existing_dirpath, default="supervisord.pid")
++        self.add("subprocpidfile", "supervisord.subprocpidfile",
++                 "s:", "subprocpidfile=", existing_dirpath)
+         self.add("identifier", "supervisord.identifier", "i:", "identifier=",
+                  str, default="supervisor")
+         self.add("childlogdir", "supervisord.childlogdir", "q:", "childlogdir=",
+@@ -417,6 +422,7 @@
+         self.process_group_configs = []
+         self.parse_warnings = []
+         self.signal_receiver = SignalReceiver()
++        self.resumed_pids = set()
+ 
+     def version(self, dummy):
+         """Print version to stdout and exit(0).
+@@ -458,6 +464,14 @@
+ 
+         self.pidfile = normalize_path(pidfile)
+ 
++        if self.subprocpidfile:
++            subprocpidfile = self.subprocpidfile
++        else:
++            subprocpidfile = section.subprocpidfile
++
++        if subprocpidfile:
++            self.subprocpidfile = normalize_path(subprocpidfile)
++
+         self.rpcinterface_factories = section.rpcinterface_factories
+ 
+         self.serverurl = None
+@@ -551,6 +565,7 @@
+         section.logfile_backups = integer(get('logfile_backups', 10))
+         section.loglevel = logging_level(get('loglevel', 'info'))
+         section.pidfile = existing_dirpath(get('pidfile', 'supervisord.pid'))
++        section.subprocpidfile = existing_dirpath(get('subprocpidfile', ''))
+         section.identifier = get('identifier', 'supervisor')
+         section.nodaemon = boolean(get('nodaemon', 'false'))
+ 
+@@ -1017,6 +1032,75 @@
+         else:
+             self.logger.info('supervisord started with pid %s' % pid)
+ 
++    def add_process(self, process):
++        self.pidhistory[process.pid] = process
++        self.write_subproc_pidfile()
++
++    def del_process(self, pid):
++        del self.pidhistory[pid]
++        self.write_subproc_pidfile()
++
++    def get_process(self, pid):
++        return self.pidhistory.get(pid, None)
++
++    def write_subproc_pidfile(self):
++        if not self.subprocpidfile: return
++        try:
++            f = open(self.subprocpidfile, 'w')
++            for pid, process in self.pidhistory.iteritems():
++                f.write('%s %d %d\n' %
++                        (process.config.name, pid, process.laststart))
++            f.close()
++        except (IOError, OSError):
++            self.logger.critical('could not write sub-process pidfile %s' %
++                                 self.subprocpidfile)
++        else:
++            self.logger.info('supervisord wrote sub-process pidfile')
++
++    def load_subproc_pidfile(self, process_groups):
++        if not self.subprocpidfile: return
++        resumed_processes = {}
++        try:
++            f = open(self.subprocpidfile, 'r')
++            for line in f:
++                process_name, pid, laststart = line.split()
++                pid = int(pid)
++                laststart = int(laststart)
++                try:
++                    os.kill(pid, 0)
++                except:
++                    self.logger.info(
++                        "pid doesn't exist, can't resume '%s' with pid %d" %
++                        (process_name, pid))
++                else:
++                    self.logger.info(
++                        "would resume process '%s' with pid %d later" %
++                        (process_name, pid))
++                    resumed_processes[process_name] = (pid, laststart)
++            f.close()
++        except (IOError, OSError, ValueError) as e:
++            self.logger.warn('could not load sub-process pidfile %s' %
++                             self.subprocpidfile)
++            print type(e)
++        else:
++            self.logger.info('supervisord load sub-process pidfile')
++
++        for group in process_groups.itervalues():
++            for process in group.processes.itervalues():
++                process_name = process.config.name
++                if process_name in resumed_processes:
++                    process.pid, process.laststart = resumed_processes[process_name]
++                    process.resumed = True
++                    process.change_state(ProcessStates.RUNNING)
++                    self.add_process(process)
++
++                    del resumed_processes[process_name]
++                    self.resumed_pids.add(process.pid)
++
++                    self.logger.info(
++                        "success: resumed process '%s' with pid %d" %
++                        (process_name, process.pid))
++
+     def cleanup(self):
+         try:
+             for config, server in self.httpservers:
+@@ -1186,6 +1270,17 @@
+         os.setuid(uid)
+ 
+     def waitpid(self):
++        # firstly send a signal to all resumed processes to check if they are
++        # still running. resumed process is NOT spawned child process of
++        # supervisord, so the os.waitpid doesn't work.
++        for pid in self.resumed_pids:
++            try:
++                os.kill(pid, 0)
++            except:
++                # got an exception, we blindly consider the process has exited.
++                self.resumed_pids.remove(pid)
++                return pid, 0
++
+         # need pthread_sigmask here to avoid concurrent sigchild, but
+         # Python doesn't offer it as it's not standard across UNIX versions.
+         # there is still a race condition here; we can get a sigchild while
+Index: supervisor/supervisor/process.py
+===================================================================
+--- supervisor/supervisor/process.py
++++ supervisor/supervisor/process.py
+@@ -49,6 +49,8 @@
+     exitstatus = None # status attached to dead process by finsh()
+     spawnerr = None # error message attached by spawn() if any
+     group = None # ProcessGroup instance if process is in the group
++    resumed = False # whether the process is created by a previous supervisord
++                    # instance and is resumed by current supervisord
+     
+     def __init__(self, config):
+         """Constructor.
+@@ -254,7 +256,8 @@
+         options.logger.info('spawned: %r with pid %s' % (self.config.name, pid))
+         self.spawnerr = None
+         self.delay = time.time() + self.config.startsecs
+-        options.pidhistory[pid] = self
++        self.resumed = False
++        options.add_process(self)
+         return pid
+ 
+     def _prepare_child_fds(self):
+@@ -465,7 +468,8 @@
+         self.config.options.logger.info(msg)
+ 
+         self.pid = 0
+-        self.config.options.close_parent_pipes(self.pipes)
++        if not self.resumed:
++            self.config.options.close_parent_pipes(self.pipes)
+         self.pipes = {}
+         self.dispatchers = {}
+ 
+Index: supervisor/supervisor/rpcinterface.py
+===================================================================
+--- supervisor/supervisor/rpcinterface.py
++++ supervisor/supervisor/rpcinterface.py
+@@ -474,6 +474,8 @@
+             now_dt = datetime.datetime(*time.gmtime(now)[:6])
+             uptime = now_dt - start_dt
+             desc = 'pid %s, uptime %s' % (info['pid'], uptime)
++            if info['resumed']:
++                desc += ' [resumed]'
+ 
+         elif state in (ProcessStates.FATAL, ProcessStates.BACKOFF):
+             desc = info['spawnerr']
+@@ -527,6 +529,7 @@
+             'stdout_logfile':stdout_logfile,
+             'stderr_logfile':stderr_logfile,
+             'pid':process.pid,
++            'resumed':process.resumed,
+             }
+ 
+         description = self._interpretProcessInfo(info)
+Index: supervisor/supervisor/supervisord.py
+===================================================================
+--- supervisor/supervisor/supervisord.py
++++ supervisor/supervisor/supervisord.py
+@@ -97,6 +97,7 @@
+             # writing pid file needs to come *after* daemonizing or pid
+             # will be wrong
+             self.options.write_pidfile()
++            self.options.load_subproc_pidfile(self.process_groups)
+             self.runforever()
+         finally:
+             self.options.cleanup()
+@@ -192,6 +193,16 @@
+             pgroups.sort()
+ 
+             if self.options.mood < SupervisorStates.RUNNING:
++                if self.options.subprocpidfile:
++                    # 'subprocpidfile' option is set, which implies that all
++                    # managed sub-processes should NOT be killed and would
++                    # continue to run even supervisord exits. the supervisord
++                    # would also continue to manage these sub-processes after
++                    # it restarts.
++                    self.options.logger.info('exiting without killing managed '
++                                             'sub-processes')
++                    raise asyncore.ExitNow
++
+                 if not self.stopping:
+                     # first time, set the stopping flag, do a
+                     # notification and set stop_groups
+@@ -281,12 +292,12 @@
+     def reap(self, once=False):
+         pid, sts = self.options.waitpid()
+         if pid:
+-            process = self.options.pidhistory.get(pid, None)
++            process = self.options.get_process(pid)
+             if process is None:
+                 self.options.logger.critical('reaped unknown pid %s)' % pid)
+             else:
+                 process.finish(pid, sts)
+-                del self.options.pidhistory[pid]
++                self.options.del_process(pid)
+             if not once:
+                 self.reap() # keep reaping until no more kids to reap
+ 
