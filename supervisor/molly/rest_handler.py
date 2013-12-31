@@ -18,19 +18,6 @@ from medusa import producers
 
 unquote = http_server.unquote
 
-# This is the 'default' handler.  it implements the base set of
-# features expected of a simple file-delivering HTTP server.  file
-# services are provided through a 'filesystem' object, the very same
-# one used by the FTP server.
-#
-# You can replace or modify this handler if you want a non-standard
-# HTTP server.  You can also derive your own handler classes from
-# it.
-#
-# support for handling POST requests is available in the derived
-# class <default_with_post_handler>, defined below.
-#
-
 # This is the 'restful' handler. It implements the restful api  I need
 # For example: use http api replace the default rpc interfaceo.
 # use github http hook to perceive the change of git repo code.
