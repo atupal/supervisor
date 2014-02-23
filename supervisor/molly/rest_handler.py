@@ -65,6 +65,12 @@ class rest_handler:
         self.hit_counter.increment()
 
         path, params, query, fragment = request.split_uri()
+        repo = None
+        if query:
+          import urlparse
+          qs = urlparse.parse_qs(query[1:])
+          if qs.get('repo'):
+            repo = qs.get('repo')[0]
 
         if '%' in path:
             path = unquote (path)
@@ -80,7 +86,8 @@ class rest_handler:
         context = ViewContext(template='ui/status.html',
                               request = request,
                               form = {
-                                'processname': 'nodeblog',
+                                #'processname': 'nodeblog',
+                                'processname': repo if repo else 'nodeblog',
                                 'action': 'restart',
                                 },
                               response = {
